@@ -2,13 +2,20 @@
 /**
  * 插件门禁校验：依次运行 harness 的门禁脚本并汇总结果。
  * 由各插件 package.json 的 verify 脚本调用，工作目录即被校验的插件根目录。
+ *
+ * 门禁脚本在 harness 仓库根运行，会扫描整个仓库并报出仓库其它部分的违规。落在
+ * {@link myRoot}（本文件所在目录的父目录，即全部插件的共同目录）之外的违规与本插件
+ * 无关，展示时逐行滤掉，也不计入该门禁的成败。
  */
 import { spawnSync } from 'node:child_process'
-import { dirname, relative, resolve } from 'node:path'
+import { dirname, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 /** harness 仓库根：本文件位于 packages/my/<base>/ 下，上溯三级。 */
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
+
+/** 全部插件的共同目录：本文件所在目录的父目录。只有报在这里的违规才属于被校验的插件。 */
+const myRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 /** 被校验的插件根目录。 */
 const plugin = process.cwd()
@@ -56,6 +63,15 @@ const GATES = [
 ]
 
 /**
+ * 门禁输出里指认文件的一条仓库相对路径；这些门禁都写成 `packages/<组>/...` 形态，
+ * 可能带 `:行号` 后缀，分隔符在 Windows 上可能是反斜杠。
+ */
+const GATE_PATH_PATTERN = /packages[\\/][^\s()'",;`]+/g
+
+/** 同上，但不带全局标志：全局正则的 `test` 会保留 `lastIndex`，跨行复用会漏判。 */
+const GATE_PATH_TEST = /packages[\\/][^\s()'",;`]+/
+
+/**
  * 运行一个可执行文件并捕获输出（不经 shell，路径原样传递）。
  * @param {string} file 可执行文件。
  * @param {string[]} args 参数。
@@ -80,28 +96,74 @@ function runShell(command, cwd) {
   return { code: result.status ?? 1, output: `${result.stdout ?? ''}${result.stderr ?? ''}` }
 }
 
-/** 汇总为待执行的检查项：oxlint 先行，其后是各门禁。 */
+/**
+ * 一条门禁报出的路径是否落在 {@link myRoot} 之内。
+ * 行号后缀（`foo.ts:11`）先剥掉：它对归属判断没有意义，留着的 `:` 在 Windows 上
+ * 还会让 `resolve` 把它当成盘符之后的字符。
+ * @param {string} reported 门禁输出里截取的 `packages/...` 路径。
+ * @returns {boolean} 落在该目录树内时为 true。
+ */
+function isInsideMy(reported) {
+  const path = reported.replace(/:\d+(?::\d+)?$/, '')
+  const absolute = resolve(root, path)
+  return absolute === myRoot || absolute.startsWith(`${myRoot}${sep}`)
+}
+
+/** 一行里截取到的全部路径。 */
+function pathsIn(line) {
+  return line.match(GATE_PATH_PATTERN) ?? []
+}
+
+/**
+ * 一行是否**只**引用了 {@link myRoot} 之外的路径。
+ *
+ * 没有引用任何路径的行返回 false：无法归属到任何目录的失败不能算作"与本插件无关"，
+ * 否则门禁自身崩溃、构建产物缺失这类输出会被静默当成通过。
+ * @param {string} line 门禁输出的一行。
+ * @returns {boolean} 该行引用的路径非空且全部在目录树之外时为 true。
+ */
+function isOutsideOnly(line) {
+  const paths = pathsIn(line)
+  if (paths.length === 0) return false
+  return paths.every(path => !isInsideMy(path))
+}
+
+/** 汇总为待执行的检查项：oxlint 先行，其后是各门禁。
+ *  `scoped` 标记该检查会扫全仓库、需要按目录归属过滤输出。 */
 const checks = [
-  { label: 'oxlint', run: () => runShell('pnpm exec oxlint src', plugin) },
+  { label: 'oxlint', scoped: false, run: () => runShell('pnpm exec oxlint src', plugin) },
   ...GATES.map(gate => ({
     label: gate,
+    scoped: true,
     run: () => runFile(process.execPath, ['--import', 'tsx/esm', resolve(root, 'scripts', `${gate}.ts`)], root),
   })),
 ]
+
+const myLabel = relative(root, myRoot).replaceAll('\\', '/')
 
 console.log(`verify: ${relative(root, plugin).replaceAll('\\', '/')}`)
 console.log('')
 
 const failures = []
 for (const check of checks) {
-  const { code, output } = check.run()
-  if (code === 0) {
+  const result = check.run()
+  const output = result.output.replace(/\n+$/, '')
+  const lines = output.split('\n')
+  // 引用路径的行才是违规行；标题与统计行不带路径，不参与归属判断。
+  const refLines = lines.filter(line => GATE_PATH_TEST.test(line))
+  const outsideOnly = refLines.filter(isOutsideOnly)
+  if (result.code === 0) {
     console.log(`  ok    ${check.label}`)
     continue
   }
+  if (check.scoped && refLines.length > 0 && outsideOnly.length === refLines.length) {
+    console.log(`  ok    ${check.label} (${outsideOnly.length} violation line(s) outside ${myLabel} filtered)`)
+    continue
+  }
   console.log(`  FAIL  ${check.label}`)
-  const trimmed = output.replace(/\n+$/, '')
-  if (trimmed !== '') console.log(trimmed.split('\n').map(line => `    ${line}`).join('\n'))
+  // 树外的违规行滤掉；不带路径的行（标题、汇总、无法归属的失败）一律保留。
+  const kept = check.scoped ? lines.filter(line => !isOutsideOnly(line)) : lines
+  if (output !== '') console.log(kept.map(line => `    ${line}`).join('\n'))
   failures.push(check.label)
 }
 
