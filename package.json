@@ -34,11 +34,11 @@
   ],
   "scripts": {
     "verify": "node --import tsx/esm src/verify.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "pub": "pnpm login --registry=https://registry.npmjs.org && pnpm publish --registry=https://registry.npmjs.org --no-git-checks"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "tsx": "^4.22.4"
   }
 }
-
