@@ -2,31 +2,43 @@
 
 ## Introduction
 
-This plugin repository hosts the shared development base for the DSH plugins; it is not itself a feature plugin installable into a profile.
+This plugin repository hosts the shared development base for the DSH plugins; it is not itself a feature plugin installable into a profile. It holds a gate aggregation script and a `common/` directory of reusable runtime code tools.
 
 ## Overview
 
-The repository currently contains only development-time scripts: no `src` sources and no build output, so it takes part in no profile's bundle composition.
+The repository holds two unrelated parts: the development-time gate script `src/verify.ts`, and the runtime code tools under `src/common/` (object manager, dependency-injection container, locks, atomic writing, plain object helpers). There is no build output, so it takes part in no profile's bundle composition.
+
+The files under `src/common/` depend only on Node built-ins and import nothing but relative paths; they have no dependency on dsh or on any particular plugin. This package **publishes source only**: `exports` points at `.ts` sources, a consumer imports them by subpath, and inlines them in its own build (listing this package in `devDependencies` suffices — its bundler compiles everything outside its production dependency sections into the artifact). This package therefore needs no `main`/`lib` and maintains no compiled output.
+
+Plugins under `packages/my/` invoke the gate script as `pnpm -C ../dsh-pgnqukezrdxmhjso-base run verify`.
+
+The plugin under check comes from the `INIT_CWD` environment variable: under pnpm the working directory becomes this base repository, and only `INIT_CWD` retains the directory that started the run, nor is it overwritten by a nested inner pnpm. Running the script directly without that variable falls back to the working directory.
+
+This repository carries a `tsconfig.json` for `pnpm typecheck` (`tsc --noEmit`, checking only, emitting nothing) and for the editor, and at the same time it satisfies `verify-package-invariants`' requirement that the file exists in a package directory. It enables `allowImportingTsExtensions` because relative imports inside `common/` carry a `.ts` extension.
 
 ## todo
 
-- None.
+- The `common/` exports carry no JSDoc, and `verify-export-jsdoc` does not reach them (the gate resolves a package's public surface through `exports` targets under `lib/`, while this package points at `.ts` sources, so the scanned name set comes out empty). A build output or written comments would close the gap.
 
 ## Features
 
-### Compiled-version launcher
+### Shared code tools
 
-- Description: Starts the compiled dsh at `D:\data\code\dsh` and isolates the Harness home into a `.dsh` under this plugin directory, so the compiled version and the official instance on the default `~/.dsh` never interfere with each other.
-- Files: [start-dsh.mjs](../../start-dsh.mjs)
-- Solution: The script sets `DSH_HOME` for the child process only, leaving the caller's shell environment untouched; `cwd` stays the invoking directory so the workspace root remains wherever the user is; `stdio: 'inherit'` passes dsh's terminal interaction and exit code through unchanged. With no arguments it starts `web --no-open --port 3082`. `DSH_SOURCE_ROOT` and `DSH_ISOLATED_HOME` override the checkout root and the isolated home.
-- Approach: Isolation is required rather than optional, because `$DSH_HOME/profiles/node_modules` is one shared module-fallback directory whose links dsh rebuilds on every launch to point at the installation currently running (`healProfilesModuleFallback` in `packages/boot/app-boot/src/profile.ts`). Two installations sharing one home would rewrite each other's targets; only a home each owns exclusively lets them coexist. The port is 3082 because instances already run on 3080 and 3081.
-- Missing build output: when `apps/cli/lib/bin.js` is absent the script exits and prints the `pnpm install` and `pnpm run build` commands to run, rather than installing or building on the user's behalf.
-- The isolated home starts empty: the default home's credentials and settings are not copied, so the models must be configured in the Web Settings page on first use.
+#### Runtime code reused by the plugins
+
+- Description: `src/common/` provides an object manager, a dependency-injection container, locks, atomic file writing, and plain object helpers for the plugins under `packages/my/` to import by subpath.
+- Files: [ObjectManager.ts](../../src/common/ObjectManager.ts), [BeanHelper.ts](../../src/common/BeanHelper.ts), [Locks.ts](../../src/common/Locks.ts), [AtomicWrite.ts](../../src/common/AtomicWrite.ts), [Objects.ts](../../src/common/Objects.ts).
+- Solution: A consumer lists this package in `devDependencies` and imports `dsh-pgnqukezrdxmhjso-base/common/<file>.ts`; bundling inlines it into the consumer's artifact, so this package need not be installed after publication.
+- Approach: This package ships source only and produces no build output because a consumer's bundler decides externality from its own dependency sections — as long as this package is not among its production dependencies, the sources are compiled into its artifact, and neither side maintains an intermediate output. `BeanHelper` and `Locks` both hold state, but the copies inlining produces are correct: each is a per-caller, instance-private mechanism with no identity that must cross packages.
 
 ### Plugin gate aggregation script
 
+#### Summarise the gate results
+
 - Description: Runs the harness gate scripts in order and summarises the results, for the `pnpm verify` of every plugin under `packages/my/`.
-- Files: [verify.mjs](../../verify.mjs)
-- Solution: Each gate runs with the harness repository root as its working directory and scans the whole repository, so this script attributes every violation by whether its reported path falls inside the plugins' shared directory `packages/my/`: lines outside it are neither displayed nor counted toward that gate's pass/fail, and a pass prints how many were filtered.
-- Approach: A gate's scan root is hardcoded in the harness repository (defaulting to its root) and a plugin cannot narrow it, so the filtering can only live in this repository's own aggregation script; that keeps these kinds of checks for the plugin while making red mean "this plugin has a problem" again. The rule is tightened to "the lines carrying paths are non-empty and all of them are outside" — relaxing it to "no path of ours in the output means pass" would silently pass a gate script crashing or missing build output, which is more dangerous than the false reports it replaced.
+- Files: [verify.ts](../../src/verify.ts).
+- Solution: Each gate runs with the harness repository root as its working directory and scans the whole repository, so this script attributes every violation by whether its reported path falls inside the plugins' shared directory `packages/my/`: lines outside it are neither displayed nor counted toward that gate's pass/fail, and a pass prints how many were filtered. When the directory under check has no `src/`, oxlint is skipped with a printed note, because oxlint exits with code 1 when it finds no files to lint.
+- Approach:
+  - A gate's scan root is hardcoded in the harness repository (defaulting to its root) and a plugin cannot narrow it, so the filtering can only live in this repository's own aggregation script; that keeps these kinds of checks for the plugin while making red mean "this plugin has a problem" again.
+  - The rule is tightened to "the lines carrying paths are non-empty and all of them are outside" — relaxing it to "no path of ours in the output means pass" would silently pass a gate script crashing or missing build output, which is more dangerous than the false reports it replaced.
 - Gates left out and why: see the comments inside the script.

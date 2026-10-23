@@ -1,0 +1,44 @@
+{
+  "name": "dsh-pgnqukezrdxmhjso-base",
+  "description": "dsh 插件共用的开发基础件：门禁汇总脚本与通用代码工具",
+  "version": "0.2.0",
+  "license": "MIT",
+  "contributors": [
+    "pgnqukezrdxmhjso"
+  ],
+  "homepage": "https://github.com/pgnqukezrdxmhjso/dsh-pgnqukezrdxmhjso-base",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pgnqukezrdxmhjso/dsh-pgnqukezrdxmhjso-base.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pgnqukezrdxmhjso/dsh-pgnqukezrdxmhjso-base/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "gate-check",
+    "object-manager",
+    "dependency-injection"
+  ],
+  "type": "module",
+  "exports": {
+    "./common/*": "./src/common/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/**/*",
+    "tsconfig.json",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "verify": "node --import tsx/esm src/verify.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.22.4"
+  }
+}
+
